@@ -33,7 +33,9 @@ class PlannerAgent:
         repo_context: str,
         title: str,
         description: str,
+        project_memory: str = "",
     ) -> TechnicalPlan:
+        memory_section = f"\nProject memory (past fixes and architecture):\n{project_memory}\n" if project_memory else ""
         prompt = f"""Ticket title: {title}
 Description: {description}
 
@@ -42,7 +44,7 @@ Analysis:
 
 Repository context:
 {repo_context}
-
+{memory_section}
 Generate a detailed implementation plan."""
 
         messages = [

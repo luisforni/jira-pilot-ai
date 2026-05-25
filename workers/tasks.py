@@ -1,6 +1,5 @@
 import asyncio
 import time
-import uuid
 
 import structlog
 
@@ -15,6 +14,8 @@ from api.models.ticket import PipelineStatus
 from core.database import AsyncSessionLocal
 from core.git_manager import GitManager
 from core.jira_client import JiraClient
+from core.knowledge.extractor import KnowledgeExtractor
+from core.knowledge.memory import ProjectMemory, project_id_from_repo
 from core.repositories import PipelineRunRepository
 from workers.celery_app import celery_app
 
@@ -45,10 +46,11 @@ async def _run_pipeline(
     jira = JiraClient()
     git_manager = GitManager(repository, ticket_id)
     repo_analyzer: RepositoryAnalyzerAgent | None = None
+    project_id = project_id_from_repo(repository)
 
     async with AsyncSessionLocal() as session:
-        repo = PipelineRunRepository(session)
-        run = await repo.create(
+        run_repo = PipelineRunRepository(session)
+        run = await run_repo.create(
             celery_task_id=task_id,
             ticket_id=ticket_id,
             title=title,
@@ -88,6 +90,19 @@ async def _run_pipeline(
         branch_name = devops.prepare_branch(title, branch_base)
         await _set_status(PipelineStatus.PLANNING.value, branch_name=branch_name)
 
+        # Load project memory (previous knowledge about this repo)
+        t0 = time.monotonic()
+        async with AsyncSessionLocal() as s:
+            memory = ProjectMemory(s, project_id)
+            project_memory = await memory.get_context_for_ticket(
+                ticket_type=analysis.type.value,
+                files_hint=analysis.files_probably_related,
+                title=title,
+            )
+        ms = int((time.monotonic() - t0) * 1000)
+        await _record("project_memory", "success", {"chars": len(project_memory)}, ms=ms)
+        log.info("project_memory_loaded", project_id=project_id, chars=len(project_memory))
+
         t0 = time.monotonic()
         repo_analyzer = RepositoryAnalyzerAgent()
         repo_context = await repo_analyzer.analyze(repo_path, analysis)
@@ -96,7 +111,7 @@ async def _run_pipeline(
 
         t0 = time.monotonic()
         planner = PlannerAgent()
-        plan = await planner.plan(analysis, repo_context, title, description)
+        plan = await planner.plan(analysis, repo_context, title, description, project_memory=project_memory)
         ms = int((time.monotonic() - t0) * 1000)
         await _record("planner", "success", plan.model_dump(), ms=ms)
         log.info("plan_created", steps=len(plan.steps))
@@ -147,6 +162,23 @@ async def _run_pipeline(
         ms = int((time.monotonic() - t0) * 1000)
         await _record("devops_agent", "success", {"pr_url": pr_url, "sha": commit_sha}, ms=ms)
         log.info("pr_created", url=pr_url)
+
+        # Extract and store knowledge for future runs
+        try:
+            async with AsyncSessionLocal() as s:
+                extractor = KnowledgeExtractor()
+                await extractor.extract_and_store(
+                    session=s,
+                    project_id=project_id,
+                    ticket_id=ticket_id,
+                    analysis=analysis,
+                    plan=plan,
+                    modified_files=modified_files,
+                    repo_context=repo_context,
+                    pr_url=pr_url,
+                )
+        except Exception as exc:
+            log.warning("knowledge_extraction_failed", error=str(exc))
 
         _update_jira(
             jira, ticket_id, "PR_CREATED",
