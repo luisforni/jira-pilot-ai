@@ -24,10 +24,11 @@ httpx = "^0.27.0"
 sqlalchemy = {extras = ["asyncio"], version = "^2.0.36"}
 asyncpg = "^0.30.0"
 alembic = "^1.13.0"
-qdrant-client = "^1.12.0"
+qdrant-client = {extras = ["fastembed"], version = "^1.12.0"}
 redis = "^5.2.0"
 python-dotenv = "^1.0.0"
 structlog = "^24.4.0"
+tiktoken = "^0.8.0"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.3.0"

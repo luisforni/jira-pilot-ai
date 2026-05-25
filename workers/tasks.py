@@ -1,5 +1,6 @@
 import asyncio
-import os
+import time
+import uuid
 
 import structlog
 
@@ -11,14 +12,16 @@ from agents.repository_analyzer import RepositoryAnalyzerAgent
 from agents.reviewer import ReviewerAgent
 from agents.ticket_analyzer import TicketAnalyzerAgent
 from api.models.ticket import PipelineStatus
+from core.database import AsyncSessionLocal
 from core.git_manager import GitManager
 from core.jira_client import JiraClient
+from core.repositories import PipelineRunRepository
 from workers.celery_app import celery_app
 
 log = structlog.get_logger()
 
 
-def _update_jira_status(jira: JiraClient, ticket_id: str, status: str, comment: str = "") -> None:
+def _update_jira(jira: JiraClient, ticket_id: str, status: str, comment: str = "") -> None:
     try:
         jira.transition_issue(ticket_id, status)
         if comment:
@@ -41,61 +44,124 @@ async def _run_pipeline(
 ) -> dict:
     jira = JiraClient()
     git_manager = GitManager(repository, ticket_id)
+    repo_analyzer: RepositoryAnalyzerAgent | None = None
+
+    async with AsyncSessionLocal() as session:
+        repo = PipelineRunRepository(session)
+        run = await repo.create(
+            celery_task_id=task_id,
+            ticket_id=ticket_id,
+            title=title,
+            description=description,
+            labels=labels,
+            repository=repository,
+            branch_base=branch_base,
+        )
+        run_id = run.id
+        await session.commit()
+
+    async def _record(agent: str, status: str, output: dict | None = None, error: str | None = None, ms: int = 0) -> None:
+        async with AsyncSessionLocal() as s:
+            r = PipelineRunRepository(s)
+            await r.add_agent_result(run_id, agent, status, output, error, ms)
+            await s.commit()
+
+    async def _set_status(status: str, **kwargs) -> None:
+        async with AsyncSessionLocal() as s:
+            r = PipelineRunRepository(s)
+            await r.update_status(run_id, status, **kwargs)
+            await s.commit()
 
     try:
-        _update_jira_status(jira, ticket_id, "AI_ANALYZING", "🤖 JiraPilot AI is analyzing this ticket.")
+        _update_jira(jira, ticket_id, "AI_ANALYZING", "🤖 JiraPilot AI is analyzing this ticket.")
+        await _set_status(PipelineStatus.ANALYZING.value)
 
+        t0 = time.monotonic()
         analyzer = TicketAnalyzerAgent()
         analysis = await analyzer.analyze(ticket_id, title, description, labels)
+        ms = int((time.monotonic() - t0) * 1000)
+        await _record("ticket_analyzer", "success", analysis.model_dump(), ms=ms)
         log.info("ticket_analyzed", ticket_id=ticket_id, type=analysis.type.value)
 
         repo_path = git_manager.clone()
         devops = DevOpsAgent(git_manager, repo_path)
         branch_name = devops.prepare_branch(title, branch_base)
-        log.info("branch_created", branch=branch_name)
+        await _set_status(PipelineStatus.PLANNING.value, branch_name=branch_name)
 
+        t0 = time.monotonic()
         repo_analyzer = RepositoryAnalyzerAgent()
         repo_context = await repo_analyzer.analyze(repo_path, analysis)
+        ms = int((time.monotonic() - t0) * 1000)
+        await _record("repository_analyzer", "success", {"chars": len(repo_context)}, ms=ms)
 
-        _update_jira_status(jira, ticket_id, "AI_DEVELOPING")
-
+        t0 = time.monotonic()
         planner = PlannerAgent()
         plan = await planner.plan(analysis, repo_context, title, description)
+        ms = int((time.monotonic() - t0) * 1000)
+        await _record("planner", "success", plan.model_dump(), ms=ms)
         log.info("plan_created", steps=len(plan.steps))
 
+        _update_jira(jira, ticket_id, "AI_DEVELOPING")
+        await _set_status(PipelineStatus.DEVELOPING.value)
+
+        t0 = time.monotonic()
         developer = DeveloperAgent()
         modified_files = await developer.implement(repo_path, plan, analysis, repo_context, title, description)
-        log.info("implementation_done", files=modified_files)
+        ms = int((time.monotonic() - t0) * 1000)
+        await _record("developer", "success", {"files": modified_files}, ms=ms)
 
-        _update_jira_status(jira, ticket_id, "AI_TESTING")
+        _update_jira(jira, ticket_id, "AI_TESTING")
+        await _set_status(PipelineStatus.TESTING.value)
 
+        t0 = time.monotonic()
         qa = QAAgent(repo_path)
         qa_result = qa.run()
-        log.info("qa_done", passed=qa_result.passed)
+        ms = int((time.monotonic() - t0) * 1000)
+        await _record(
+            "qa_agent",
+            "success" if qa_result.passed else "warning",
+            {"passed": qa_result.passed, "errors": qa_result.errors},
+            ms=ms,
+        )
 
+        t0 = time.monotonic()
         diff = devops.get_diff()
         reviewer = ReviewerAgent()
         review_result = await reviewer.review(plan, modified_files, qa_result, diff)
-        log.info("review_done", approved=review_result.approved)
+        ms = int((time.monotonic() - t0) * 1000)
+        await _record(
+            "reviewer",
+            "success" if review_result.approved else "warning",
+            {"approved": review_result.approved, "issues": review_result.blocking_issues},
+            ms=ms,
+        )
+        await _set_status(PipelineStatus.REVIEWING.value)
 
         commit_sha = devops.commit_and_push(ticket_id, title, branch_name)
-        log.info("pushed", sha=commit_sha)
 
+        t0 = time.monotonic()
         pr_url = await devops.create_pull_request(
             github_token, repo_slug, branch_name, branch_base,
             ticket_id, title, analysis, plan, qa_result, review_result,
         )
+        ms = int((time.monotonic() - t0) * 1000)
+        await _record("devops_agent", "success", {"pr_url": pr_url, "sha": commit_sha}, ms=ms)
         log.info("pr_created", url=pr_url)
 
-        _update_jira_status(
-            jira,
-            ticket_id,
-            "PR_CREATED",
+        _update_jira(
+            jira, ticket_id, "PR_CREATED",
             f"✅ PR created by JiraPilot AI: {pr_url}\n\n{review_result.to_pr_comment()}",
         )
 
         if assignee_account_id:
             jira.assign_issue(ticket_id, assignee_account_id)
+
+        await _set_status(
+            PipelineStatus.PR_CREATED.value,
+            pull_request_url=pr_url,
+            analysis=analysis.model_dump(),
+            plan=plan.model_dump(),
+        )
 
         return {
             "status": PipelineStatus.PR_CREATED.value,
@@ -107,9 +173,16 @@ async def _run_pipeline(
 
     except Exception as exc:
         log.error("pipeline_failed", ticket_id=ticket_id, error=str(exc))
-        _update_jira_status(jira, ticket_id, "FAILED", f"❌ JiraPilot AI pipeline failed: {exc}")
+        _update_jira(jira, ticket_id, "FAILED", f"❌ JiraPilot AI pipeline failed: {exc}")
+        await _set_status(PipelineStatus.FAILED.value, error=str(exc))
         return {"status": PipelineStatus.FAILED.value, "error": str(exc)}
+
     finally:
+        if repo_analyzer:
+            try:
+                await repo_analyzer.cleanup_index(repo_path)
+            except Exception:
+                pass
         git_manager.cleanup()
 
 
