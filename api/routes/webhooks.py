@@ -2,9 +2,13 @@ import hashlib
 import hmac
 import os
 
-from fastapi import APIRouter, Header, HTTPException, Request, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from core.config import settings
+from core.auth.deps import get_org_from_api_key
+from core.auth.rate_limit import check_and_increment
+from core.database import get_db
+from core.models.auth import Organization
 from workers.celery_app import celery_app
 
 router = APIRouter(prefix="/webhooks", tags=["webhooks"])
@@ -21,6 +25,7 @@ def _verify_jira_signature(payload: bytes, signature: str) -> bool:
 @router.post("/jira")
 async def jira_webhook(
     request: Request,
+    org: Organization = Depends(get_org_from_api_key),
     x_hub_signature: str = Header(default=""),
 ) -> dict:
     body = await request.body()
@@ -57,9 +62,14 @@ async def jira_webhook(
             detail="PROJECT_REPOSITORY env var not configured",
         )
 
+    allowed, current, limit = await check_and_increment(str(org.id), org.plan)
+    if not allowed:
+        raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail=f"Monthly limit reached ({limit} runs)")
+
     task = celery_app.send_task(
         "workers.tasks.run_ticket_pipeline",
         kwargs={
+            "org_id": str(org.id),
             "ticket_id": issue.get("key", ""),
             "title": fields.get("summary", ""),
             "description": fields.get("description", "") or "",

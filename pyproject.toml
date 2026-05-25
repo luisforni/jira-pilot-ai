@@ -31,6 +31,9 @@ redis = "^5.2.0"
 python-dotenv = "^1.0.0"
 structlog = "^24.4.0"
 tiktoken = "^0.8.0"
+passlib = {extras = ["bcrypt"], version = "^1.7.4"}
+pyjwt = "^2.9.0"
+email-validator = "^2.2.0"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.3.0"

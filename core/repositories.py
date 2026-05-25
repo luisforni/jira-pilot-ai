@@ -21,8 +21,10 @@ class PipelineRunRepository:
         labels: list[str],
         repository: str,
         branch_base: str,
+        org_id: str | None = None,
     ) -> PipelineRun:
         run = PipelineRun(
+            org_id=org_id,
             celery_task_id=celery_task_id,
             ticket_id=ticket_id,
             title=title,

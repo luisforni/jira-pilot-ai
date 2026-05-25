@@ -1,6 +1,6 @@
 import os
 
-from fastapi import APIRouter, Depends, Header, HTTPException, status
+from fastapi import APIRouter, Depends, status
 
 from api.models.ticket import (
     PipelineStatus,
@@ -8,21 +8,18 @@ from api.models.ticket import (
     RunTicketResponse,
     TaskStatusResponse,
 )
-from core.config import settings
+from core.auth.deps import get_org_from_api_key, require_pipeline_quota
+from core.auth.rate_limit import get_usage
+from core.models.auth import PLAN_MONTHLY_LIMITS, Organization
 from workers.celery_app import celery_app
 
 router = APIRouter(prefix="/agent", tags=["agent"])
 
 
-def _verify_webhook_secret(x_webhook_secret: str = Header(...)) -> None:
-    if x_webhook_secret != settings.n8n_webhook_secret:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid webhook secret")
-
-
 @router.post("/run-ticket", response_model=RunTicketResponse, status_code=status.HTTP_202_ACCEPTED)
 async def run_ticket(
     body: RunTicketRequest,
-    _: None = Depends(_verify_webhook_secret),
+    org: Organization = Depends(require_pipeline_quota),
 ) -> RunTicketResponse:
     github_token = os.environ.get("GITHUB_TOKEN", "")
     repo_slug = os.environ.get("GITHUB_REPO_SLUG", "")
@@ -30,6 +27,7 @@ async def run_ticket(
     task = celery_app.send_task(
         "workers.tasks.run_ticket_pipeline",
         kwargs={
+            "org_id": str(org.id),
             "ticket_id": body.ticket_id,
             "title": body.title,
             "description": body.description,
@@ -52,30 +50,18 @@ async def run_ticket(
 
 
 @router.get("/status/{task_id}", response_model=TaskStatusResponse)
-async def get_task_status(task_id: str) -> TaskStatusResponse:
+async def get_task_status(
+    task_id: str,
+    _org: Organization = Depends(get_org_from_api_key),
+) -> TaskStatusResponse:
     result = celery_app.AsyncResult(task_id)
 
     if result.state == "PENDING":
-        return TaskStatusResponse(
-            task_id=task_id,
-            ticket_id="",
-            status=PipelineStatus.QUEUED,
-        )
-
+        return TaskStatusResponse(task_id=task_id, ticket_id="", status=PipelineStatus.QUEUED)
     if result.state == "STARTED":
-        return TaskStatusResponse(
-            task_id=task_id,
-            ticket_id="",
-            status=PipelineStatus.ANALYZING,
-        )
-
+        return TaskStatusResponse(task_id=task_id, ticket_id="", status=PipelineStatus.ANALYZING)
     if result.state == "FAILURE":
-        return TaskStatusResponse(
-            task_id=task_id,
-            ticket_id="",
-            status=PipelineStatus.FAILED,
-            error=str(result.result),
-        )
+        return TaskStatusResponse(task_id=task_id, ticket_id="", status=PipelineStatus.FAILED, error=str(result.result))
 
     data = result.result or {}
     return TaskStatusResponse(
@@ -86,3 +72,16 @@ async def get_task_status(task_id: str) -> TaskStatusResponse:
         branch_name=data.get("branch_name"),
         error=data.get("error"),
     )
+
+
+@router.get("/quota", tags=["agent"])
+async def get_quota(org: Organization = Depends(get_org_from_api_key)) -> dict:
+    usage = await get_usage(str(org.id))
+    limit = PLAN_MONTHLY_LIMITS.get(org.plan, 50)
+    return {
+        "org_slug": org.slug,
+        "plan": org.plan,
+        "usage_this_month": usage,
+        "monthly_limit": limit,
+        "remaining": max(0, limit - usage),
+    }

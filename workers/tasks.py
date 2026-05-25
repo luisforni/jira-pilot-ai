@@ -43,6 +43,7 @@ async def _run_pipeline(
     github_token: str,
     repo_slug: str,
     assignee_account_id: str | None,
+    org_id: str | None = None,
 ) -> dict:
     jira = JiraClient()
     git_manager = GitManager(repository, ticket_id)
@@ -59,6 +60,7 @@ async def _run_pipeline(
             labels=labels,
             repository=repository,
             branch_base=branch_base,
+            org_id=org_id,
         )
         run_id = run.id
         await session.commit()

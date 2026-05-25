@@ -7,8 +7,10 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from api.routes.agent import router as agent_router
+from api.routes.auth import router as auth_router
 from api.routes.dashboard import router as dashboard_router
 from api.routes.knowledge import router as knowledge_router
+from api.routes.orgs import router as orgs_router
 from api.routes.pipeline import router as pipeline_router
 from api.routes.webhooks import router as webhooks_router
 from api.routes.ws import router as ws_router
@@ -52,6 +54,8 @@ def create_app() -> FastAPI:
     )
 
     app.include_router(ws_router)
+    app.include_router(auth_router)
+    app.include_router(orgs_router)
     app.include_router(agent_router)
     app.include_router(pipeline_router)
     app.include_router(knowledge_router)
