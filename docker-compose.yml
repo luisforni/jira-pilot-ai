@@ -25,6 +25,23 @@ services:
       - redis
       - qdrant
     restart: unless-stopped
+    # Docker socket mount so the worker can spawn sandbox containers
+    # NOTE: this grants significant privilege — keep the worker image minimal
+    # and use the allowlist in SandboxRunner to constrain what runs inside.
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    group_add:
+      - "docker"
+
+  sandbox-builder:
+    # One-shot service to build the sandbox images before workers start
+    image: docker:27-cli
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./sandbox/images:/images
+    command: sh /images/build.sh
+    profiles:
+      - setup
 
   postgres:
     image: postgres:16-alpine
