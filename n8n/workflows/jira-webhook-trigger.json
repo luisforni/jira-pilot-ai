@@ -1,0 +1,76 @@
+{
+  "name": "JiraPilot - Ticket Trigger",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "jira-trigger",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "name": "Jira Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "position": [240, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{$json[\"webhookEvent\"]}}",
+              "operation": "contains",
+              "value2": "jira:issue"
+            }
+          ]
+        }
+      },
+      "name": "Has AI Label?",
+      "type": "n8n-nodes-base.if",
+      "position": [460, 300]
+    },
+    {
+      "parameters": {
+        "url": "http://api:8000/webhooks/jira",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{$json}}",
+        "options": {}
+      },
+      "name": "Forward to JiraPilot API",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [700, 200]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={\"status\": \"ok\"}"
+      },
+      "name": "Respond OK",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "position": [940, 300]
+    }
+  ],
+  "connections": {
+    "Jira Webhook": {
+      "main": [[{"node": "Has AI Label?", "type": "main", "index": 0}]]
+    },
+    "Has AI Label?": {
+      "main": [
+        [{"node": "Forward to JiraPilot API", "type": "main", "index": 0}],
+        [{"node": "Respond OK", "type": "main", "index": 0}]
+      ]
+    },
+    "Forward to JiraPilot API": {
+      "main": [[{"node": "Respond OK", "type": "main", "index": 0}]]
+    }
+  }
+}

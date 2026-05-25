@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  push:
+    branches: [develop, release, pro]
+  pull_request:
+    branches: [develop, release, pro]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Poetry
+        run: pip install poetry==1.8.4
+
+      - name: Install dependencies
+        run: poetry install --no-interaction
+
+      - name: Lint
+        run: poetry run ruff check .
+
+      - name: Type check
+        run: poetry run mypy agents/ api/ core/ workers/ --ignore-missing-imports
+
+      - name: Tests
+        run: poetry run pytest --cov=. --cov-report=xml -q
+
+      - name: Upload coverage
+        uses: codecov/codecov-action@v4
+        with:
+          file: ./coverage.xml
