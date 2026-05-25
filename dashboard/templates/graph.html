@@ -1,0 +1,186 @@
+{% extends "base.html" %}
+{% block title %}Knowledge Graph — JiraPilot AI{% endblock %}
+{% block nav_graph %}active{% endblock %}
+
+{% block content %}
+<div x-data="graphView()" x-init="init()">
+  <div class="flex items-center justify-between mb-6">
+    <div>
+      <h1 class="text-2xl font-bold text-white">Knowledge Graph</h1>
+      <p class="text-gray-400 text-sm mt-1">Accumulated project architecture and fix history</p>
+    </div>
+    <div class="flex gap-2">
+      <input x-model="repoUrl" placeholder="git@github.com:company/api.git"
+             class="bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-200 w-72 focus:outline-none focus:border-indigo-500"/>
+      <button @click="loadGraph()"
+              class="bg-indigo-600 hover:bg-indigo-500 text-white px-4 py-2 rounded-lg text-sm font-medium transition">
+        Load
+      </button>
+    </div>
+  </div>
+
+  <!-- Legend -->
+  <div class="flex gap-4 mb-4 text-xs text-gray-400">
+    <span class="flex items-center gap-1.5"><span class="w-3 h-3 rounded-full bg-indigo-500"></span> File</span>
+    <span class="flex items-center gap-1.5"><span class="w-3 h-3 rounded-full bg-cyan-500"></span> Service</span>
+    <span class="flex items-center gap-1.5"><span class="w-3 h-3 rounded-full bg-yellow-500"></span> Pattern</span>
+    <span class="flex items-center gap-1.5"><span class="w-3 h-3 rounded-full bg-green-500"></span> Fix</span>
+    <span class="text-gray-600 ml-4">Nodes: <span x-text="nodeCount">0</span> | Edges: <span x-text="edgeCount">0</span></span>
+  </div>
+
+  <!-- Graph container -->
+  <div class="bg-gray-900 border border-gray-800 rounded-2xl overflow-hidden relative" style="height: 600px;">
+    <div x-show="loading" class="absolute inset-0 flex items-center justify-center z-10 bg-gray-900/80">
+      <div class="text-indigo-400 text-sm">Loading graph…</div>
+    </div>
+    <div x-show="!loading && nodeCount === 0" class="absolute inset-0 flex items-center justify-center">
+      <div class="text-center text-gray-600">
+        <p class="text-lg mb-2">No data yet</p>
+        <p class="text-sm">Run a pipeline to start building the knowledge graph</p>
+      </div>
+    </div>
+    <svg id="graph-svg" width="100%" height="100%"></svg>
+  </div>
+
+  <!-- Node tooltip -->
+  <div id="tooltip" class="hidden fixed z-50 bg-gray-800 border border-gray-700 rounded-xl px-4 py-3 text-sm max-w-xs shadow-xl pointer-events-none">
+    <p class="font-medium text-white" id="tt-label"></p>
+    <p class="text-gray-400 text-xs mt-1" id="tt-desc"></p>
+    <p class="text-gray-500 text-xs mt-1" id="tt-props"></p>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="https://d3js.org/d3.v7.min.js"></script>
+<script>
+function graphView() {
+  const NODE_COLORS = { file: '#6366f1', service: '#06b6d4', pattern: '#eab308', fix: '#22c55e' };
+  const NODE_RADII  = { file: 6, service: 10, pattern: 8, fix: 9 };
+
+  return {
+    repoUrl: '',
+    loading: false,
+    nodeCount: 0,
+    edgeCount: 0,
+    simulation: null,
+
+    init() {
+      // try to load last used repo from localStorage
+      this.repoUrl = localStorage.getItem('jira_pilot_repo') || '';
+      if (this.repoUrl) this.loadGraph();
+    },
+
+    async loadGraph() {
+      if (!this.repoUrl) return;
+      localStorage.setItem('jira_pilot_repo', this.repoUrl);
+      this.loading = true;
+
+      try {
+        const encoded = encodeURIComponent(this.repoUrl);
+        const res = await fetch(`/knowledge/graph/${encoded}`);
+        if (!res.ok) throw new Error(await res.text());
+        const data = await res.json();
+        this.renderGraph(data);
+      } catch (e) {
+        alert('Failed to load graph: ' + e.message);
+      } finally {
+        this.loading = false;
+      }
+    },
+
+    renderGraph(data) {
+      const nodes = [
+        ...data.files.map(n => ({ ...n, type: 'file' })),
+        ...data.services.map(n => ({ ...n, type: 'service' })),
+        ...data.patterns.map(n => ({ ...n, type: 'pattern' })),
+        ...data.fixes.map(n => ({ ...n, type: 'fix' })),
+      ];
+      this.nodeCount = nodes.length;
+
+      // Build edges from fix→file relationships stored in properties
+      const links = [];
+      data.fixes.forEach(fix => {
+        const changed = (fix.properties?.files_changed || []);
+        changed.forEach(filePath => {
+          const target = data.files.find(f => f.label === filePath);
+          if (target) links.push({ source: fix.id, target: target.id, type: 'fixed_by' });
+        });
+      });
+      this.edgeCount = links.length;
+
+      const svg = d3.select('#graph-svg');
+      svg.selectAll('*').remove();
+      const { width, height } = svg.node().getBoundingClientRect();
+
+      const g = svg.append('g');
+      svg.call(d3.zoom().scaleExtent([0.3, 3]).on('zoom', e => g.attr('transform', e.transform)));
+
+      // Arrow marker
+      svg.append('defs').append('marker')
+        .attr('id', 'arrow').attr('viewBox', '0 -5 10 10')
+        .attr('refX', 18).attr('markerWidth', 6).attr('markerHeight', 6)
+        .attr('orient', 'auto')
+        .append('path').attr('d', 'M0,-5L10,0L0,5').attr('fill', '#4b5563');
+
+      if (this.simulation) this.simulation.stop();
+      this.simulation = d3.forceSimulation(nodes)
+        .force('link', d3.forceLink(links).id(d => d.id).distance(80))
+        .force('charge', d3.forceManyBody().strength(-200))
+        .force('center', d3.forceCenter(width / 2, height / 2))
+        .force('collision', d3.forceCollide(20));
+
+      const link = g.append('g').selectAll('line')
+        .data(links).join('line')
+        .attr('stroke', '#374151').attr('stroke-width', 1.5)
+        .attr('marker-end', 'url(#arrow)');
+
+      const node = g.append('g').selectAll('g')
+        .data(nodes).join('g')
+        .attr('cursor', 'pointer')
+        .call(d3.drag()
+          .on('start', (e, d) => { if (!e.active) this.simulation.alphaTarget(0.3).restart(); d.fx = d.x; d.fy = d.y; })
+          .on('drag',  (e, d) => { d.fx = e.x; d.fy = e.y; })
+          .on('end',   (e, d) => { if (!e.active) this.simulation.alphaTarget(0); d.fx = null; d.fy = null; })
+        );
+
+      node.append('circle')
+        .attr('r', d => NODE_RADII[d.type] || 6)
+        .attr('fill', d => NODE_COLORS[d.type] || '#6b7280')
+        .attr('fill-opacity', 0.85)
+        .attr('stroke', d => NODE_COLORS[d.type] || '#6b7280')
+        .attr('stroke-width', 1.5);
+
+      node.append('text')
+        .attr('dx', d => (NODE_RADII[d.type] || 6) + 4)
+        .attr('dy', '0.35em')
+        .attr('fill', '#d1d5db')
+        .attr('font-size', '10px')
+        .text(d => d.label.length > 30 ? '…' + d.label.slice(-28) : d.label);
+
+      // Tooltip
+      const tooltip = document.getElementById('tooltip');
+      node
+        .on('mousemove', (e, d) => {
+          tooltip.classList.remove('hidden');
+          tooltip.style.left = (e.clientX + 12) + 'px';
+          tooltip.style.top  = (e.clientY - 8) + 'px';
+          document.getElementById('tt-label').textContent = d.label;
+          document.getElementById('tt-desc').textContent = d.description || '';
+          const props = d.properties || {};
+          document.getElementById('tt-props').textContent =
+            Object.entries(props).filter(([,v]) => typeof v !== 'object')
+              .map(([k,v]) => `${k}: ${v}`).join(' · ');
+        })
+        .on('mouseleave', () => tooltip.classList.add('hidden'));
+
+      this.simulation.on('tick', () => {
+        link.attr('x1', d => d.source.x).attr('y1', d => d.source.y)
+            .attr('x2', d => d.target.x).attr('y2', d => d.target.y);
+        node.attr('transform', d => `translate(${d.x},${d.y})`);
+      });
+    }
+  };
+}
+</script>
+{% endblock %}

@@ -14,6 +14,7 @@ from api.models.ticket import PipelineStatus
 from core.database import AsyncSessionLocal
 from core.git_manager import GitManager
 from core.jira_client import JiraClient
+from core.events import publish
 from core.knowledge.extractor import KnowledgeExtractor
 from core.knowledge.memory import ProjectMemory, project_id_from_repo
 from core.repositories import PipelineRunRepository
@@ -67,12 +68,16 @@ async def _run_pipeline(
             r = PipelineRunRepository(s)
             await r.add_agent_result(run_id, agent, status, output, error, ms)
             await s.commit()
+        await publish("agent_done", task_id=task_id, ticket_id=ticket_id, agent=agent, status=status, duration_ms=ms)
 
     async def _set_status(status: str, **kwargs) -> None:
         async with AsyncSessionLocal() as s:
             r = PipelineRunRepository(s)
             await r.update_status(run_id, status, **kwargs)
             await s.commit()
+        await publish("pipeline_status", task_id=task_id, ticket_id=ticket_id, status=status, **{
+            k: v for k, v in kwargs.items() if isinstance(v, (str, int, float, bool, type(None)))
+        })
 
     try:
         _update_jira(jira, ticket_id, "AI_ANALYZING", "🤖 JiraPilot AI is analyzing this ticket.")

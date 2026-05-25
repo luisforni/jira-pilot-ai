@@ -1,0 +1,121 @@
+{% extends "base.html" %}
+{% block title %}Metrics — JiraPilot AI{% endblock %}
+{% block nav_metrics %}active{% endblock %}
+
+{% block content %}
+<div>
+  <h1 class="text-2xl font-bold text-white mb-1">Metrics</h1>
+  <p class="text-gray-400 text-sm mb-8">Agent performance across all pipeline runs</p>
+
+  <!-- Summary cards -->
+  <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
+    {% set statuses = [('pr_created','PRs Created','green'),('failed','Failed','red'),('analyzing','Active','indigo'),('queued','Queued','gray')] %}
+    {% for key, label, color in statuses %}
+    <div class="bg-gray-900 border border-gray-800 rounded-xl p-5">
+      <div class="text-3xl font-bold text-{{ color }}-400">{{ summary.get(key, 0) }}</div>
+      <div class="text-sm text-gray-500 mt-1">{{ label }}</div>
+    </div>
+    {% endfor %}
+  </div>
+
+  <!-- Charts row -->
+  <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
+    <div class="bg-gray-900 border border-gray-800 rounded-2xl p-6">
+      <h2 class="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-4">Avg Duration per Agent (ms)</h2>
+      <canvas id="durationChart" height="220"></canvas>
+    </div>
+    <div class="bg-gray-900 border border-gray-800 rounded-2xl p-6">
+      <h2 class="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-4">Success Rate per Agent (%)</h2>
+      <canvas id="successChart" height="220"></canvas>
+    </div>
+  </div>
+
+  <!-- Agent table -->
+  <div class="bg-gray-900 border border-gray-800 rounded-2xl overflow-hidden">
+    <table class="w-full text-sm">
+      <thead>
+        <tr class="border-b border-gray-800 text-gray-400 text-xs uppercase tracking-wider">
+          <th class="text-left px-5 py-3">Agent</th>
+          <th class="text-right px-5 py-3">Runs</th>
+          <th class="text-right px-5 py-3">Avg Duration</th>
+          <th class="text-right px-5 py-3">Success Rate</th>
+          <th class="px-5 py-3">Health</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for m in agent_metrics %}
+        <tr class="border-b border-gray-800/50">
+          <td class="px-5 py-4 font-medium text-gray-200">{{ m.label }}</td>
+          <td class="px-5 py-4 text-right text-gray-400">{{ m.total }}</td>
+          <td class="px-5 py-4 text-right text-gray-400">{{ m.avg_ms }}ms</td>
+          <td class="px-5 py-4 text-right
+            {% if m.success_rate >= 90 %}text-green-400
+            {% elif m.success_rate >= 70 %}text-yellow-400
+            {% else %}text-red-400{% endif %}">
+            {{ m.success_rate }}%
+          </td>
+          <td class="px-5 py-4">
+            <div class="w-full bg-gray-800 rounded-full h-2">
+              <div class="h-2 rounded-full
+                {% if m.success_rate >= 90 %}bg-green-500
+                {% elif m.success_rate >= 70 %}bg-yellow-500
+                {% else %}bg-red-500{% endif %}"
+                style="width: {{ m.success_rate }}%"></div>
+            </div>
+          </td>
+        </tr>
+        {% else %}
+        <tr>
+          <td colspan="5" class="px-5 py-12 text-center text-gray-600">No agent data yet.</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const metrics = {{ agent_metrics | tojson }};
+const labels = metrics.map(m => m.label);
+
+const chartDefaults = {
+  plugins: { legend: { display: false } },
+  scales: {
+    x: { ticks: { color: '#6b7280' }, grid: { color: '#1f2937' } },
+    y: { ticks: { color: '#6b7280' }, grid: { color: '#1f2937' } }
+  }
+};
+
+new Chart(document.getElementById('durationChart'), {
+  type: 'bar',
+  data: {
+    labels,
+    datasets: [{
+      data: metrics.map(m => m.avg_ms),
+      backgroundColor: '#6366f1aa',
+      borderColor: '#6366f1',
+      borderWidth: 1,
+      borderRadius: 4,
+    }]
+  },
+  options: { ...chartDefaults, scales: { ...chartDefaults.scales, y: { ...chartDefaults.scales.y, beginAtZero: true } } }
+});
+
+new Chart(document.getElementById('successChart'), {
+  type: 'bar',
+  data: {
+    labels,
+    datasets: [{
+      data: metrics.map(m => m.success_rate),
+      backgroundColor: metrics.map(m => m.success_rate >= 90 ? '#22c55e88' : m.success_rate >= 70 ? '#eab30888' : '#ef444488'),
+      borderColor:      metrics.map(m => m.success_rate >= 90 ? '#22c55e'   : m.success_rate >= 70 ? '#eab308'   : '#ef4444'),
+      borderWidth: 1,
+      borderRadius: 4,
+    }]
+  },
+  options: { ...chartDefaults, scales: { ...chartDefaults.scales, y: { ...chartDefaults.scales.y, beginAtZero: true, max: 100 } } }
+});
+</script>
+{% endblock %}

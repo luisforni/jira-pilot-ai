@@ -1,0 +1,177 @@
+{% extends "base.html" %}
+{% block title %}{{ run.ticket_id }} — JiraPilot AI{% endblock %}
+{% block nav_home %}active{% endblock %}
+
+{% block content %}
+<div x-data="pipelineDetail('{{ run.task_id }}')" x-init="init()">
+
+  <!-- Back + header -->
+  <div class="mb-6">
+    <a href="/dashboard" class="text-gray-500 hover:text-gray-300 text-sm">← Back to pipelines</a>
+    <div class="flex items-start justify-between mt-3">
+      <div>
+        <h1 class="text-2xl font-bold text-white flex items-center gap-3">
+          <span class="font-mono text-indigo-400">{{ run.ticket_id }}</span>
+          <span class="text-gray-300 font-normal text-xl">{{ run.title }}</span>
+        </h1>
+        <p class="text-gray-500 text-sm mt-1">Task: <code class="text-xs text-gray-400">{{ run.task_id }}</code></p>
+      </div>
+      <div>
+        <span id="status-badge" class="inline-flex items-center gap-2 px-3 py-1.5 rounded-full text-sm font-medium
+          {% if run.status == 'pr_created' or run.status == 'completed' %}bg-green-900/50 text-green-400 border border-green-700
+          {% elif run.status == 'failed' %}bg-red-900/50 text-red-400 border border-red-700
+          {% else %}bg-indigo-900/50 text-indigo-400 border border-indigo-700{% endif %}">
+          <span class="w-2 h-2 rounded-full
+            {% if run.status == 'pr_created' %}bg-green-400
+            {% elif run.status == 'failed' %}bg-red-400
+            {% else %}bg-indigo-400 pulse{% endif %}"></span>
+          {{ run.status.replace('_', ' ').title() }}
+        </span>
+      </div>
+    </div>
+  </div>
+
+  <!-- PR link -->
+  {% if run.pull_request_url %}
+  <div class="mb-6 bg-green-900/30 border border-green-700/50 rounded-xl px-5 py-4 flex items-center justify-between">
+    <div>
+      <p class="text-green-400 font-medium">Pull Request Created</p>
+      <p class="text-green-300/70 text-sm mt-0.5">Branch: <code>{{ run.branch_name }}</code></p>
+    </div>
+    <a href="{{ run.pull_request_url }}" target="_blank"
+       class="bg-green-600 hover:bg-green-500 text-white px-4 py-2 rounded-lg text-sm font-medium transition">
+      View PR →
+    </a>
+  </div>
+  {% endif %}
+
+  {% if run.error %}
+  <div class="mb-6 bg-red-900/30 border border-red-700/50 rounded-xl px-5 py-4">
+    <p class="text-red-400 font-medium">Pipeline Failed</p>
+    <pre class="text-red-300/70 text-xs mt-2 whitespace-pre-wrap">{{ run.error }}</pre>
+  </div>
+  {% endif %}
+
+  <!-- Agent timeline -->
+  <div class="bg-gray-900 border border-gray-800 rounded-2xl p-6 mb-6">
+    <h2 class="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-6">Agent Pipeline</h2>
+    <div class="space-y-3" id="agent-steps">
+      {% for agent in run.agents %}
+      <div class="flex items-center gap-4" id="agent-{{ agent.name }}">
+        <!-- Status dot -->
+        <div class="w-8 h-8 rounded-full flex items-center justify-center shrink-0
+          {% if agent.status == 'success' %}bg-green-900/50 border-2 border-green-500
+          {% elif agent.status == 'warning' %}bg-yellow-900/50 border-2 border-yellow-500
+          {% elif agent.status == 'error' %}bg-red-900/50 border-2 border-red-500
+          {% else %}bg-gray-800 border-2 border-gray-700{% endif %}">
+          <span class="text-xs">
+            {% if agent.status == 'success' %}✓
+            {% elif agent.status == 'warning' %}⚠
+            {% elif agent.status == 'error' %}✗
+            {% else %}·{% endif %}
+          </span>
+        </div>
+
+        <!-- Label -->
+        <div class="flex-1">
+          <div class="flex items-center gap-3">
+            <span class="font-medium text-sm text-gray-200">{{ agent.label }}</span>
+            {% if agent.duration_ms %}
+            <span class="text-xs text-gray-500">{{ agent.duration_ms }}ms</span>
+            {% elif agent.status == 'pending' %}
+            <span class="text-xs text-gray-600">waiting</span>
+            {% endif %}
+          </div>
+          {% if agent.error %}
+          <p class="text-xs text-red-400 mt-0.5">{{ agent.error }}</p>
+          {% endif %}
+        </div>
+
+        <!-- Progress bar -->
+        <div class="w-32 bg-gray-800 rounded-full h-1.5">
+          <div class="h-1.5 rounded-full
+            {% if agent.status == 'success' %}bg-green-500
+            {% elif agent.status == 'warning' %}bg-yellow-500
+            {% elif agent.status == 'error' %}bg-red-500
+            {% else %}bg-gray-700{% endif %}"
+            style="width: {% if agent.status != 'pending' %}100{% else %}0{% endif %}%">
+          </div>
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+
+  <!-- Live events log -->
+  <div class="bg-gray-900 border border-gray-800 rounded-2xl p-6">
+    <h2 class="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-4">Live Events</h2>
+    <div id="event-log" class="space-y-1.5 max-h-64 overflow-y-auto font-mono text-xs text-gray-400">
+      <p class="text-gray-600">Waiting for events…</p>
+    </div>
+  </div>
+
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function pipelineDetail(taskId) {
+  return {
+    ws: null,
+    init() {
+      const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+      this.ws = new WebSocket(`${proto}://${location.host}/ws/${taskId}`);
+      this.ws.onmessage = (e) => this.onEvent(JSON.parse(e.data));
+      setInterval(() => { if (this.ws.readyState === 1) this.ws.send('ping'); }, 20000);
+      document.addEventListener('pipeline-event', (e) => {
+        if (e.detail.task_id === taskId) this.onEvent(e.detail);
+      });
+    },
+
+    onEvent(event) {
+      this.logEvent(event);
+      if (event.type === 'agent_done') this.updateAgent(event.agent, event.status, event.duration_ms);
+      if (event.type === 'pipeline_status') this.updateStatus(event.status);
+    },
+
+    logEvent(event) {
+      const log = document.getElementById('event-log');
+      const p = document.querySelector('#event-log p.text-gray-600');
+      if (p) p.remove();
+      const el = document.createElement('div');
+      el.className = 'flex gap-2';
+      el.innerHTML = `<span class="text-gray-600">${new Date().toLocaleTimeString()}</span>
+        <span class="text-indigo-400">${event.type}</span>
+        <span>${JSON.stringify(event).substring(0, 120)}</span>`;
+      log.appendChild(el);
+      log.scrollTop = log.scrollHeight;
+    },
+
+    updateAgent(agentName, status, durationMs) {
+      const row = document.getElementById(`agent-${agentName}`);
+      if (!row) return;
+      const dot = row.querySelector('div.w-8');
+      const bar = row.querySelector('.h-1\\.5.rounded-full:not(.bg-gray-800)') || row.querySelector('[style]');
+
+      const colorMap = { success: 'green', warning: 'yellow', error: 'red' };
+      const c = colorMap[status] || 'gray';
+
+      if (dot) dot.className = dot.className
+        .replace(/bg-\w+-900\/50|border-\w+-500|bg-gray-800|border-gray-700/g, '')
+        + ` bg-${c}-900/50 border-2 border-${c}-500`;
+
+      const durEl = row.querySelector('.text-xs.text-gray-500, .text-xs.text-gray-600');
+      if (durEl && durationMs) durEl.textContent = `${durationMs}ms`;
+    },
+
+    updateStatus(status) {
+      const badge = document.getElementById('status-badge');
+      if (badge) {
+        badge.querySelector('span:last-child').textContent =
+          status.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+      }
+    }
+  };
+}
+</script>
+{% endblock %}

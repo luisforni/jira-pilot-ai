@@ -1,0 +1,145 @@
+{% extends "base.html" %}
+{% block title %}Pipelines — JiraPilot AI{% endblock %}
+{% block nav_home %}active{% endblock %}
+
+{% block content %}
+<div x-data="dashboard()" x-init="init()">
+
+  <!-- Header -->
+  <div class="flex items-center justify-between mb-8">
+    <div>
+      <h1 class="text-2xl font-bold text-white">Pipeline Runs</h1>
+      <p class="text-gray-400 text-sm mt-1">Real-time status of all AI pipeline executions</p>
+    </div>
+    <div class="flex gap-3">
+      <div class="stat-card bg-gray-900 border border-gray-800 rounded-xl px-4 py-3 text-center">
+        <div class="text-2xl font-bold text-white">{{ total }}</div>
+        <div class="text-xs text-gray-500 mt-1">Total runs</div>
+      </div>
+      <div class="stat-card bg-green-950 border border-green-800 rounded-xl px-4 py-3 text-center">
+        <div class="text-2xl font-bold text-green-400">{{ summary.get('pr_created', 0) }}</div>
+        <div class="text-xs text-gray-500 mt-1">PRs created</div>
+      </div>
+      <div class="stat-card bg-red-950 border border-red-800 rounded-xl px-4 py-3 text-center">
+        <div class="text-2xl font-bold text-red-400">{{ summary.get('failed', 0) }}</div>
+        <div class="text-xs text-gray-500 mt-1">Failed</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Live activity banner -->
+  <div x-show="liveEvent" x-cloak x-transition
+       class="mb-4 bg-indigo-900/50 border border-indigo-700 rounded-xl px-4 py-3 flex items-center gap-3">
+    <span class="w-2 h-2 rounded-full bg-indigo-400 pulse"></span>
+    <span class="text-indigo-300 text-sm" x-text="liveEvent"></span>
+  </div>
+
+  <!-- Pipeline table -->
+  <div class="bg-gray-900 border border-gray-800 rounded-2xl overflow-hidden">
+    <table class="w-full text-sm">
+      <thead>
+        <tr class="border-b border-gray-800 text-gray-400 text-xs uppercase tracking-wider">
+          <th class="text-left px-5 py-3">Ticket</th>
+          <th class="text-left px-5 py-3">Title</th>
+          <th class="text-left px-5 py-3">Status</th>
+          <th class="text-left px-5 py-3 hidden md:table-cell">Pipeline</th>
+          <th class="text-left px-5 py-3 hidden lg:table-cell">Created</th>
+          <th class="text-left px-5 py-3">PR</th>
+        </tr>
+      </thead>
+      <tbody id="pipeline-table">
+        {% for run in runs %}
+        <tr class="border-b border-gray-800/50 hover:bg-gray-800/40 transition cursor-pointer"
+            data-task="{{ run.task_id }}"
+            onclick="window.location='/dashboard/pipeline/{{ run.task_id }}'">
+          <td class="px-5 py-4">
+            <span class="font-mono font-semibold text-indigo-400">{{ run.ticket_id }}</span>
+          </td>
+          <td class="px-5 py-4 text-gray-200 max-w-xs truncate">{{ run.title }}</td>
+          <td class="px-5 py-4">
+            <span class="status-badge status-{{ run.status }} inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium
+              {% if run.status == 'pr_created' or run.status == 'completed' %}bg-green-900/50 text-green-400 border border-green-700
+              {% elif run.status == 'failed' %}bg-red-900/50 text-red-400 border border-red-700
+              {% elif run.status in ('analyzing','planning','developing','testing','reviewing') %}bg-indigo-900/50 text-indigo-400 border border-indigo-700
+              {% else %}bg-gray-800 text-gray-400 border border-gray-700{% endif %}">
+              {% if run.status in ('analyzing','planning','developing','testing','reviewing') %}
+                <span class="w-1.5 h-1.5 rounded-full bg-indigo-400 pulse"></span>
+              {% endif %}
+              {{ run.status.replace('_', ' ').title() }}
+            </span>
+          </td>
+          <td class="px-5 py-4 hidden md:table-cell">
+            <div class="flex gap-1">
+              {% for agent in run.agents %}
+              <div class="w-2.5 h-2.5 rounded-full
+                {% if agent.status == 'success' %}bg-green-500
+                {% elif agent.status == 'warning' %}bg-yellow-500
+                {% elif agent.status == 'error' %}bg-red-500
+                {% else %}bg-gray-700{% endif %}"
+                   title="{{ agent.label }}: {{ agent.status }}">
+              </div>
+              {% endfor %}
+            </div>
+          </td>
+          <td class="px-5 py-4 text-gray-500 hidden lg:table-cell text-xs">{{ run.created_at }}</td>
+          <td class="px-5 py-4">
+            {% if run.pull_request_url %}
+            <a href="{{ run.pull_request_url }}" target="_blank"
+               class="text-indigo-400 hover:text-indigo-300 text-xs underline"
+               onclick="event.stopPropagation()">View PR →</a>
+            {% else %}
+            <span class="text-gray-600 text-xs">—</span>
+            {% endif %}
+          </td>
+        </tr>
+        {% else %}
+        <tr>
+          <td colspan="6" class="px-5 py-12 text-center text-gray-600">
+            No pipeline runs yet. Trigger one via the webhook or API.
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function dashboard() {
+  return {
+    liveEvent: null,
+    _timer: null,
+
+    init() {
+      document.addEventListener('pipeline-event', (e) => this.onEvent(e.detail));
+    },
+
+    onEvent(event) {
+      if (event.type === 'pipeline_status') {
+        this.flash(`${event.ticket_id} → ${event.status.replace('_', ' ')}`);
+        this.updateRow(event.task_id, event.status);
+      } else if (event.type === 'agent_done') {
+        this.flash(`${event.ticket_id} — ${event.agent} done (${event.duration_ms}ms)`);
+      }
+    },
+
+    flash(msg) {
+      this.liveEvent = msg;
+      clearTimeout(this._timer);
+      this._timer = setTimeout(() => this.liveEvent = null, 5000);
+    },
+
+    updateRow(taskId, status) {
+      const row = document.querySelector(`tr[data-task="${taskId}"]`);
+      if (!row) return;
+      const badge = row.querySelector('.status-badge');
+      if (badge) {
+        badge.textContent = status.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+      }
+    }
+  };
+}
+</script>
+{% endblock %}

@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="en" class="h-full bg-gray-950">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>{% block title %}JiraPilot AI{% endblock %}</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js" defer></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: { extend: { colors: { gray: { 950: '#0a0a0f' } } } }
+    }
+  </script>
+  <style>
+    [x-cloak] { display: none !important; }
+    .agent-done   { @apply bg-green-500; }
+    .agent-warning{ @apply bg-yellow-500; }
+    .agent-error  { @apply bg-red-500; }
+    .agent-pending{ @apply bg-gray-600; }
+    .pulse { animation: pulse 2s infinite; }
+  </style>
+</head>
+<body class="h-full text-gray-100 font-sans">
+
+<!-- Sidebar -->
+<div class="flex h-full">
+  <nav class="w-56 bg-gray-900 border-r border-gray-800 flex flex-col py-6 px-4 shrink-0">
+    <a href="/dashboard" class="flex items-center gap-2 mb-8">
+      <span class="text-indigo-400 text-2xl">⚡</span>
+      <span class="font-bold text-lg text-white">JiraPilot</span>
+      <span class="text-xs text-gray-500 ml-1">AI</span>
+    </a>
+    <div class="space-y-1">
+      <a href="/dashboard"         class="nav-link {% block nav_home %}{% endblock %}">🏠 Pipelines</a>
+      <a href="/dashboard/metrics" class="nav-link {% block nav_metrics %}{% endblock %}">📊 Metrics</a>
+      <a href="/dashboard/graph"   class="nav-link {% block nav_graph %}{% endblock %}">🕸️ Knowledge</a>
+      <a href="/docs"              class="nav-link" target="_blank">📖 API Docs</a>
+    </div>
+
+    <div class="mt-auto pt-6 border-t border-gray-800" id="ws-status">
+      <div class="flex items-center gap-2 text-xs text-gray-500">
+        <span class="w-2 h-2 rounded-full bg-gray-600" id="ws-dot"></span>
+        <span id="ws-label">Disconnected</span>
+      </div>
+    </div>
+  </nav>
+
+  <!-- Main content -->
+  <main class="flex-1 overflow-auto bg-gray-950">
+    <div class="max-w-7xl mx-auto px-6 py-8">
+      {% block content %}{% endblock %}
+    </div>
+  </main>
+</div>
+
+<style>
+  .nav-link {
+    display: block;
+    padding: 0.5rem 0.75rem;
+    border-radius: 0.5rem;
+    font-size: 0.875rem;
+    color: #9ca3af;
+    transition: all 0.15s;
+    text-decoration: none;
+  }
+  .nav-link:hover, .nav-link.active {
+    background: #1f2937;
+    color: #f9fafb;
+  }
+</style>
+
+<script>
+  // Global WebSocket — receives all pipeline events
+  (function() {
+    const dot = document.getElementById('ws-dot');
+    const label = document.getElementById('ws-label');
+    const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+    let ws;
+
+    function connect() {
+      ws = new WebSocket(`${proto}://${location.host}/ws`);
+      ws.onopen = () => {
+        dot.className = 'w-2 h-2 rounded-full bg-green-500';
+        label.textContent = 'Live';
+      };
+      ws.onclose = () => {
+        dot.className = 'w-2 h-2 rounded-full bg-red-500';
+        label.textContent = 'Reconnecting…';
+        setTimeout(connect, 3000);
+      };
+      ws.onmessage = (e) => {
+        const event = JSON.parse(e.data);
+        document.dispatchEvent(new CustomEvent('pipeline-event', { detail: event }));
+      };
+      // keep-alive
+      setInterval(() => { if (ws.readyState === 1) ws.send('ping'); }, 20000);
+    }
+    connect();
+  })();
+</script>
+
+{% block scripts %}{% endblock %}
+</body>
+</html>
